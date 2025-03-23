@@ -1,0 +1,365 @@
+Network Working Group                                       M. Nyx Brain
+Request for Comments: TBD                     City, University of London
+Version: 4                                                 February 2025
+
+               CRN : The Censorship Resistent Network
+
+Abstract
+
+   Recently there have been an increased number of threats to
+   communication networks.  These include democratic and autocratic
+   governments trying to ban social networks and rich individuals
+   buying social network companies to impose their ideology and
+   biases on the users.  There is a clear need for a distributed,
+   censorship resistent communication network.  This RFC proposes a
+   protocol that can be used to build one.
+   
+   CRN is a peer-to-peer protocol that provides both a key/value store
+   and relaying to protect the identity of those accessing the
+   information.  Participants in the network are known as nodes.  Each
+   node stores part of the key/value store and can relay queries for
+   other nodes.  There is no central co-ordination so nodes can join
+   and leave the network at any time.  As long as a node can contact
+   at least one other, it will be able to access anything on the
+   network.
+
+   Nodes communicate over UDP using request, reponse and information
+   messages.  This document describes the required formats and
+   protocols for communication between nodes.
+
+
+1. Terminology
+
+   The terminology of RFC 2119 is used : MUST, SHOULD and MAY.
+
+   The following terms will be used in this document:
+
+   Space : A single byte with value 0x20.  This is the same as the
+   space character in ASCII and UTF-8 Unicode.
+
+   String : zero or more bytes.  In CRN messages they are represented
+   as the number of spaces they contain encoded using decimal
+   characters, a single space, the string encoded using UTF-8 and a
+   final space. For example:
+      "Hello"         is represented as "0 Hello "
+      "Hello World"   is represented as "1 Hello World "
+      "  "            is represented as "2    "
+      ""              is represented as "0  "
+
+   Node name : A string that starts with "N:"
+
+   Data name : A string that starts with "D:"
+
+
+2. Key/Value pairs
+
+   The CRN stores key/value pairs.  There are two types of key/value
+   pair, addresses and data.
+
+   The key in an address key/value pair MUST be a node name.
+   The value for address key MUST be an IP address followed by a ':'
+   character and a UDP port number.  For example, if the node called
+   N:test could be reached at 127.0.0.1 port 20110 then the
+   corresponding key/value pair would be:
+   
+      ("N:test", "127.0.0.1:20110")
+
+   The key in a data key/value pair  MUST be a data name.
+   There are no restrictions on the value.  For example, a data
+   key/value could be:
+
+      ("D:message", "Hello World!")
+
+   When contained in a CRN messages, these would be represented as:
+
+   "0 N:test 0 127.0.0.1:20110 "
+   "0 D:message 1 Hello World! "
+
+
+3. HashIDs
+
+   The hashID of a key/value pair is the SHA-256 hash of the key.  In
+   CRN messages these are encoded using 64 hex digits.  For example the
+   key/value pair ("D:message", "Hello World!") would have the hashID:
+
+   c22e1d650c0b6ff53d9f72bc5dbeb06e07dadba6dde7ae554fe5904cad31a518
+
+   The distance between two hashIDs is 256 minus the number of
+   leading bits that match.  For example, if the two hashIDs are:
+
+   0f033be6cea034bd45a0352775a219ef5dc7825ce55d1f7dae9762d80ce64411
+   0f0139b167bb7b4a416b8f6a7e0daa7e24a08172b9892171e5fdc615bb7f999b
+
+   then the first 14 bits match so the distance between the keys is
+   242.  The distance between a hashID and itself is 0 as all of the bits
+   match.  The distance from H1 to H2 is the same as the distance from
+   H2 to H1.  Also the following triangle inequality holds:
+
+   distance(H1,H3) <= distance(H1, H2) + distance(H2, H3)
+
+   The distance between two key/value pairs is the distance between
+   their hashIDs.
+
+
+4. Nodes
+
+   Participants in a CRN are referred to as a node.  All nodes have a
+   node name.  It MUST be unique within in the CRN.  There MUST NOT be
+   two nodes with the same name.
+
+   Each node has a hashID which is the hashID of the node name.
+   In the example above, the node's hashID is:
+
+   7aba054693f4b9b5d90de71ad330d3d3e1e3c168f6cf521391550ddc85f73edd
+
+   The distance between two nodes or a node and a key is the distance
+   between their hashIDs.
+
+
+5. Storage
+
+   Every node in a CRN stores some of the key/value pairs in the
+   network.  The rules for which are stored depends on the key type.
+
+5.1. Address key/value pairs
+
+   A node MUST store its own address key/value pair.  It MUST store at
+   most three address key/value pairs for every distance (three pairs
+   at distance 10, three nodes at distance 11, etc.).  If a node has
+   more than three address key/value pairs at the same distance it
+   MUST only keep three.  It SHOULD pick to maximise network
+   robustness and stability.  This MAY be picking the longest running
+   node.
+
+   By limiting the number of address key/value pairs stored the memory
+   required is limited and does not grow with the size of network.  By
+   storing address key/value pairs at all distances, the number of
+   nodes that must be contacted to find the nearest node to a hashID is
+   minimised.  Nodes SHOULD aim to acquire as many address key/value
+   pairs as they can store given the limits above.
+
+   Address key/value pairs may be acquired in one of five ways:
+   1. Bootstrapping : the program that runs the node may set one or
+      more initial address key/value pairs.
+   2. Direct Write : the node may receive a write or CAS message
+      from another node for an address key/value pair.
+   3. Relay : the node may relay a read, write, CAS or nearest request
+      and response message from another node.
+   4. Passive mapping : the node may find the names of nodes who have
+      contacted it using a name request.
+   5. Active mapping : the node may query other nodes for address
+      key/value pairs using a nearest request.
+
+   Nodes SHOULD write their address key/value pair to other nodes to
+   increase the number of connections in the network.
+
+   Nodes MUST remove address key/value from their store if they
+   incorrectly implement the protocol or are not working.
+
+5.2. Data
+
+   Data key/value pairs are set and modified by write and
+   compare-and-swap requests.  Nodes MUST send write requests to one
+   of the three nodes in the network that are closest to the data
+   being stored.  Nodes SHOULD attempt to store to all of the closest
+   three nodes.
+   
+   Nodes MUST reject a write request for a key/value pair if they have
+   three address key/value pairs for nodes that are strictly closer to
+   the data key that is being written.
+   
+   If a node has a stored data key/value pair and gets address
+   key/values pairs which mean that there are now three or more nodes
+   that are strictly closer to the data key then the node MUST try to
+   store the data key/value pair with those three.  If it succeeds it
+   SHOULD delete its copy.
+
+   Nodes SHOULD only send read requests to the three nodes in the
+   network that are nearest to the key.
+
+
+6. Communication Between Nodes
+
+   Nodes communicate using messages.  Each message is sent in a UDP
+   packet.  Nodes SHOULD use ports in the range 20110--20130.
+
+   There are three kinds of message : requests, responses and
+   information.  Every different request message type has a corresponding
+   response message.  Response messages MUST only be sent as responses
+   to requests.  Information messages do not have a corresponding
+   response message.
+
+   Because UDP does not provide ordered delivery, nodes MUST handle
+   responses arriving in a different order to the requests being
+   sent.  Nodes MAY send responses in a different order to
+   the requests arriving.
+
+   All messages start with a header.  It is a two byte transaction ID
+   followed by a space.  The transaction ID bytes MUST NOT be spaces.
+   The transaction ID of a response must be the same as the
+   transaction ID of the request.  This makes it clear which requests
+   and responses are linked, even if they arrive out of order.  Nodes
+   MUST pick transaction IDs for requests so that the links are
+   unambiguous.
+
+   Because UDP does not provide reliable delivery, if there is no
+   response to a request within 5 seconds a node MUST resend the
+   request.  A request MUST be resent at most 3 times if there is no
+   response.  Resending a request MUST NOT stop a node from responding
+   to other requests.
+   
+
+6.1. Name Request And Name Response Messages
+
+   A name request message consists of a message header followed by a
+   single 'G' character.
+
+   A name response message consists of a message header, a single
+   'H' character, a space and a node name.
+
+   When a node receives a name request it MUST send a name response
+   message with its node name.  This allows identification of nodes
+   from an address and checking that nodes are reachable and working.
+   
+
+6.2. Nearest Request And Nearest Response Messages
+
+   A nearest request message consists of a message header, a single
+   'N' character, a space and a hashID.
+
+   A nearest response message consists of a message header, a single
+   'O' character, a space and one to three address key/value pairs.
+
+   When a node receives a nearest request it MUST send a nearest
+   response.  The response MUST contain the address key/value pairs
+   the node has that are closest to the requested key.  If the node
+   has fewer than three address key/value pairs stored then it MUST
+   send all the ones it has stored.  This allows nodes to find the
+   node that stores a given key.  Because each node stores a limited
+   number of address key/value pairs, nodes MUST NOT assume that
+   querying a single node is sufficient to find the closest node in a
+   network.
+
+
+6.3. Information Messages
+
+   An information message consists of a message header, a single 'I'
+   character, a space and a string.
+
+   An information message allows nodes to communicate information to
+   the person running a node.  These messages are for information only
+   and nodes MAY discard them without notifying the user.
+
+
+6.4. Relay Messages
+
+   A relay message consists of a message header, a single 'V'
+   character, a space, a node name and another message.
+
+   When a node receives a relay message it MUST send the message
+   contained inside to the named node.  If the message inside is a
+   request then it MUST also send the response back to the sender of
+   the relay.  When sending back the response, the transaction ID of
+   the response MUST be set to the transaction ID of the relay
+   message.
+
+   These messages allow a node to route their messages through another
+   node or a chain or nodes to disguise who is requesting it and to
+   avoid censorship or blocking of some nodes.
+
+   Handling of a relay message MUST NOT prevent a node from responding
+   to other messages.
+
+
+6.5. Key/Value Requests
+
+   These requests change the key/value pairs a node has stored.  Each
+   request contains a key.  This will be referred to as the requested
+   key.  Their behaviour depends on what key/value pair the node has
+   stored and the requested key.  There are two conditions:
+
+   A : Does the node have a key/value pair whose key matches the
+       requested key?
+   B : Is the node one of the three closest address key/value pairs to
+       the requested key?
+
+6.5.1. Key Existence Request and Key Existence Response Messages
+
+   A key existence request consists of a message header followed by
+   a single 'E' character, a space and a key.
+
+   A key existence response consists of a message header followed by a
+   single 'F' character, a space and a response character.
+
+   When a node receives a key existence request it MUST send a key
+   existence response message.  The response character depends on the
+   conditions A and B:
+
+   * A true --> the response character MUST be 'Y'.
+   * A false, B true --> the response character MUST be 'N'.
+   * A false, B false --> the response character MUST be '?'.
+
+6.5.2. Read Request and Read Response Messages
+
+   A read request consists of a message header followed by a single
+   'R' character, a space and a key.
+
+   A read response consists of a message header followed by a single
+   'S' character, a space, a response character, a space and a
+   response string.
+
+   When a node receives a read request it MUST send a read response
+   message.  The response character and string depend on the
+   conditions A and B:
+
+   * A true --> the response character MUST be 'Y' and the string MUST
+     be the value of the key/value pair that matches the requested key.
+   * A false, B true --> the response character MUST be 'N' and the
+     string MUST be empty.
+   * A false, B false --> the response character MUST be '?' and the
+     string MUST be empty.
+
+6.5.3. Write Request and Write Response Messages
+
+   A write request consists of a message header followed by a single
+   'W' character, a space, a key and a value.
+
+   A write response consists of a message header followed by a single
+   'X' character, a space and a response character.
+
+   When a node receives a write request it MUST send a write response
+   message.  The response character depends on the conditions A and B:
+
+   * A true --> the node MUST replace the key/value pair with the
+     requested key/value pair and the response character MUST be 'R'.
+   * A false, B true --> the node MUST store the requested key/value
+     and the pair the response character MUST be 'A'.
+   * A false, B false --> the response character MUST be 'X'.
+
+6.5.4. Compare And Swap Request and Compare And Swap Response Message
+
+   A compare and swap request consists of a message header followed by
+   a single 'C' character, a space, a key, and two values.
+   We will refer to the first value as the "requested value" and the
+   second as the "new value".
+
+   A compare and swap request consists of a message header followed by
+   a single 'D' character, a space and a string.
+
+   When a node receives a compare and swap request it MUST send a
+   compare and swap response message.  The response character depends
+   on the conditions A and B:
+
+   * A true --> if the stored key/value pair match the requested key
+     and the requested value then the node MUST replace this with the
+     requested key and the new value and the response character MUST
+     be 'R'.  If the stored key/value pair does not match the
+     requested key then the response character must be 'N'.
+   * A false, B true --> the node MUST store the requested key and new
+     value and the response character MUST be 'A'.
+   * A false, B false --> the response character MUST be 'X'.
+
+   Handling of a compare and swap request MUST be atomic.  It MUST NOT
+   be possible for another request to change the key/value pair while
+   handling a compare and swap request.
+ 

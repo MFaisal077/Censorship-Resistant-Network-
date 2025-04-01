@@ -76,20 +76,35 @@ interface NodeInterface {
 // DO NOT EDIT ends
 
 // Complete this!
+
 public class Node implements NodeInterface {
     private String nodeName;
+    private Map<String, InetSocketAddress> peerMap = new HashMap<>();
+    private Map<String, String> vault = new HashMap<>();
+    private Map<String, String> cacheNearest = new HashMap<>();
+    private String fetchCache = null;
     private DatagramSocket socket;
-    private Map<String, String> keyValueStore = new HashMap<>();
-    private Stack<String> relayStack = new Stack<>();
+    Stack<String> relayStack = new Stack<>();
 
-    public void setNodeName(String nodeName) {
-        this.nodeName = nodeName;
+    private String strip(String raw) {
+        return raw.strip().replaceAll("[\\r\\n]+", "\n");
     }
 
-    public void openPort(int portNumber) throws Exception {
-        socket = new DatagramSocket(portNumber);
+    private String makeID() {
+        return UUID.randomUUID().toString().substring(0, 4);
     }
 
+    private void reply(InetAddress address, int port, String message) {
+        try {
+            byte[] data = message.getBytes(StandardCharsets.UTF_8);
+            DatagramPacket packet = new DatagramPacket(data, data.length, address, port);
+            socket.send(packet);
+        } catch (Exception e) {
+            System.err.println("Reply error: " + e.getMessage());
+        }
+    }
+
+    @Override
     public void handleIncomingMessages(int delay) throws Exception {
         socket.setSoTimeout(delay);
         byte[] buffer = new byte[1024];
@@ -98,114 +113,177 @@ public class Node implements NodeInterface {
         try {
             socket.receive(packet);
             String message = new String(packet.getData(), 0, packet.getLength(), StandardCharsets.UTF_8);
-            processMessage(message, packet.getAddress(), packet.getPort());
+            String[] parts = message.split(" ", 3);
+            if (parts.length < 2) return;
+            String transactionId = parts[0];
+            String messageType = parts[1];
+
+            switch (messageType) {
+                case "G":
+                    reply(packet.getAddress(), packet.getPort(), transactionId + " H 0 N:" + nodeName + " ");
+                    break;
+                case "N":
+                    reply(packet.getAddress(), packet.getPort(), transactionId + " O 0 N:" + nodeName + " 0 " + packet.getAddress().getHostAddress() + ":" + packet.getPort() + " ");
+                    break;
+                case "O":
+                    cacheNearest.put(transactionId, message);
+                    break;
+                case "R":
+                    String[] readParts = message.split(" ", 4);
+                    if (readParts.length >= 4) {
+                        String key = readParts[3].trim();
+                        if (vault.containsKey(key)) {
+                            String value = vault.get(key);
+                            reply(packet.getAddress(), packet.getPort(), transactionId + " S Y 0 " + value + " ");
+                        } else {
+                            reply(packet.getAddress(), packet.getPort(), transactionId + " S N 0 ");
+                        }
+                    }
+                    break;
+                case "W":
+                    String[] writeParts = message.split(" ", 5);
+                    if (writeParts.length >= 5) {
+                        String key = writeParts[3];
+                        String value = writeParts[4].trim();
+                        vault.put(key, value);
+                        reply(packet.getAddress(), packet.getPort(), transactionId + " X A ");
+                    }
+                    break;
+                case "C":
+                    String[] casParts = message.split(" ", 6);
+                    if (casParts.length >= 6) {
+                        String key = casParts[3];
+                        String oldVal = casParts[4];
+                        String newVal = casParts[5].trim();
+                        if (vault.containsKey(key) && vault.get(key).equals(oldVal)) {
+                            vault.put(key, newVal);
+                            reply(packet.getAddress(), packet.getPort(), transactionId + " D R ");
+                        } else {
+                            reply(packet.getAddress(), packet.getPort(), transactionId + " D N ");
+                        }
+                    }
+                    break;
+                case "E":
+                    String[] existsParts = message.split(" ", 4);
+                    if (existsParts.length >= 4) {
+                        String key = existsParts[3].trim();
+                        if (vault.containsKey(key)) {
+                            reply(packet.getAddress(), packet.getPort(), transactionId + " F Y ");
+                        } else {
+                            reply(packet.getAddress(), packet.getPort(), transactionId + " F N ");
+                        }
+                    }
+                    break;
+            }
         } catch (SocketTimeoutException e) {
             // Timeout reached, return control
         }
     }
 
-    public boolean isActive(String nodeName) throws Exception {
-        sendMessage("G", nodeName);
-        return true;
+    @Override
+    public void setNodeName(String nodeName) throws Exception {
+        this.nodeName = nodeName;
     }
 
-    public void pushRelay(String nodeName) {
+    public void openPort(int portNumber) throws Exception {
+        socket = new DatagramSocket(portNumber);
+    }
+
+    @Override
+    public boolean isActive(String nodeName) throws Exception {
+        return false; // Stub
+    }
+
+    @Override
+    public void pushRelay(String nodeName) throws Exception {
         relayStack.push(nodeName);
     }
 
-    public void popRelay() {
+    @Override
+    public void popRelay() throws Exception {
         if (!relayStack.isEmpty()) {
             relayStack.pop();
         }
     }
 
     public boolean exists(String key) throws Exception {
-        return keyValueStore.containsKey(key);
+        return false; // Stub
     }
 
     public String read(String key) throws Exception {
-        return keyValueStore.getOrDefault(key, null);
+        if (vault.containsKey(key)) return vault.get(key);
+
+        String targetHash = HashID.computeHashID(key);
+        Set<String> visited = new HashSet<>();
+        Queue<String> toVisit = new LinkedList<>();
+
+        if (peerMap.isEmpty()) {
+            peerMap.put("N:azure", new InetSocketAddress("10.216.34.152", 20114));
+        }
+
+        toVisit.addAll(peerMap.keySet());
+
+        while (!toVisit.isEmpty()) {
+            String currentNode = toVisit.poll();
+            if (visited.contains(currentNode) || !peerMap.containsKey(currentNode)) continue;
+            visited.add(currentNode);
+
+            InetSocketAddress address = peerMap.get(currentNode);
+            String transactionId = makeID();
+            fetchCache = null;
+
+            reply(address.getAddress(), address.getPort(), transactionId + " R 0 " + key + " ");
+
+            long start = System.currentTimeMillis();
+            while (System.currentTimeMillis() - start < 1000) {
+                handleIncomingMessages(100);
+                if (fetchCache != null) return strip(fetchCache);
+            }
+
+            String nearestTx = makeID();
+            reply(address.getAddress(), address.getPort(), nearestTx + " N 0 " + key + " ");
+
+            long t2 = System.currentTimeMillis();
+            while (!cacheNearest.containsKey(nearestTx) && System.currentTimeMillis() - t2 < 1000) {
+                handleIncomingMessages(100);
+            }
+
+            String responseData = cacheNearest.get(nearestTx);
+            if (responseData == null) continue;
+
+            String[] parts = responseData.trim().split(" ");
+            for (int i = 0; i + 3 < parts.length; i += 4) {
+                String peerKey = parts[i + 1];
+                String peerVal = parts[i + 3];
+                if (peerKey.startsWith("N:") && peerVal.contains(":")) {
+                    String[] ipPort = peerVal.split(":");
+                    InetSocketAddress peerAddr = new InetSocketAddress(ipPort[0], Integer.parseInt(ipPort[1]));
+                    peerMap.put(peerKey, peerAddr);
+                    if (!visited.contains(peerKey)) toVisit.add(peerKey);
+                }
+            }
+        }
+
+        return null;
     }
 
     public boolean write(String key, String value) throws Exception {
-        keyValueStore.put(key, value);
+        vault.put(key, value);
+        for (InetSocketAddress addr : peerMap.values()) {
+            String txID = makeID();
+            reply(addr.getAddress(), addr.getPort(), txID + " W 0 " + key + " " + value + " ");
+        }
         return true;
     }
 
     public boolean CAS(String key, String currentValue, String newValue) throws Exception {
-        if (keyValueStore.containsKey(key) && keyValueStore.get(key).equals(currentValue)) {
-            keyValueStore.put(key, newValue);
+        if (!vault.containsKey(key)) {
+            vault.put(key, newValue);
+            return true;
+        } else if (vault.get(key).equals(currentValue)) {
+            vault.put(key, newValue);
             return true;
         }
         return false;
     }
-
-    private void processMessage(String message, InetAddress senderAddress, int senderPort) throws IOException {
-        if (message.startsWith("G")) {
-            sendResponse("H " + nodeName, senderAddress, senderPort);
-        } else if (message.startsWith("E")) {
-            handleKeyExistenceRequest(message, senderAddress, senderPort);
-        } else if (message.startsWith("R")) {
-            handleReadRequest(message, senderAddress, senderPort);
-        } else if (message.startsWith("W")) {
-            handleWriteRequest(message, senderAddress, senderPort);
-        } else if (message.startsWith("C")) {
-            handleCompareAndSwapRequest(message, senderAddress, senderPort);
-        }
-    }
-
-    private void handleKeyExistenceRequest(String message, InetAddress senderAddress, int senderPort) {
-        String key = message.substring(2);
-        String response = keyValueStore.containsKey(key) ? "F Y" : "F N";
-        sendResponse(response, senderAddress, senderPort);
-    }
-
-    private void handleReadRequest(String message, InetAddress senderAddress, int senderPort) {
-        String key = message.substring(2);
-        String value = keyValueStore.getOrDefault(key, "");
-        String response = keyValueStore.containsKey(key) ? "S Y " + value : "S N ";
-        sendResponse(response, senderAddress, senderPort);
-    }
-
-    private void handleWriteRequest(String message, InetAddress senderAddress, int senderPort) {
-        String[] parts = message.split(" ", 3);
-        if (parts.length < 3) return;
-        keyValueStore.put(parts[1], parts[2]);
-        sendResponse("X A", senderAddress, senderPort);
-    }
-
-    private void handleCompareAndSwapRequest(String message, InetAddress senderAddress, int senderPort) {
-        String[] parts = message.split(" ", 4);
-        if (parts.length < 4) return;
-        String key = parts[1], oldValue = parts[2], newValue = parts[3];
-        if (keyValueStore.containsKey(key) && keyValueStore.get(key).equals(oldValue)) {
-            keyValueStore.put(key, newValue);
-            sendResponse("D R", senderAddress, senderPort);
-        } else {
-            sendResponse("D N", senderAddress, senderPort);
-        }
-    }
-    private boolean sendMessage(String message, String nodeName) {
-        try {
-            InetAddress address = InetAddress.getByName("127.0.0.1"); // Defaulting to local address
-            byte[] messageData = message.getBytes(StandardCharsets.UTF_8);
-            DatagramPacket packet = new DatagramPacket(messageData, messageData.length, address, 20110);
-            socket.send(packet);
-            return true;
-        } catch (IOException e) {
-            System.err.println("Error sending message: " + e.getMessage());
-            return false;
-        }
-    }
-
-    private void sendResponse(String response, InetAddress recipient, int port) {
-        try {
-            byte[] responseData = response.getBytes(StandardCharsets.UTF_8);
-            DatagramPacket responsePacket = new DatagramPacket(responseData, responseData.length, recipient, port);
-            socket.send(responsePacket);
-        } catch (IOException e) {
-            System.err.println("Error sending response: " + e.getMessage());
-        }
-    }
 }
-

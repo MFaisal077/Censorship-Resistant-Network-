@@ -1,82 +1,33 @@
-import java.io.*;
-import java.net.*;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.util.*;
 // IN2011 Computer Networks
 // Coursework 2024/2025
 //
 // Submission by
-//  MOHAMMAD FAISAL
-//  230065855
-//  mohammad.faisal.3@city.ac.uk
+//  YOUR_NAME_GOES_HERE
+//  YOUR_STUDENT_ID_NUMBER_GOES_HERE
+//  YOUR_EMAIL_GOES_HERE
+
+import java.io.IOException;
+import java.net.*;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
 
 
 // DO NOT EDIT starts
-// This gives the interface that your code must implement.
-// These descriptions are intended to help you understand how the interface
-// will be used. See the RFC for how the protocol works.
-
 interface NodeInterface {
-    /* These methods configure your node.
-     * They must both be called once after the node has been created but
-     * before it is used. */
-    //Set the name of the node.
     public void setNodeName(String nodeName) throws Exception;
-    //Open a UDP Port for sending and receiving message.
     public void openPort(int portNumber) throws Exception;
-    /*
-     * These methods query and change how the network is used.
-     */
-
-    // Handle all incoming messages.
-    // If you wait for more than delay miliseconds and
-    // there are no new incoming messages return.
-    // If delay is zero then wait for an unlimited amount of time.
     public void handleIncomingMessages(int delay) throws Exception;
-
-    // Determines if a node can be contacted and is responding correctly.
-    // Handles any messages that have arrived.
     public boolean isActive(String nodeName) throws Exception;
-    // You need to keep a stack of nodes that are used to relay messages.
-    // The base of the stack is the first node to be used as a relay.
-    // The first node must relay to the second node and so on.
-
-    // Adds a node name to a stack of nodes used to relay all future messages.
     public void pushRelay(String nodeName) throws Exception;
-    // Pops the top entry from the stack of nodes used for relaying.
-    // No effect if the stack is empty
     public void popRelay() throws Exception;
-    /*
-     * These methods provide access to the basic functionality of
-     * CRN-25 network.
-     */
-
-    // Checks if there is an entry in the network with the given key.
-    // Handles any messages that have arrived.
     public boolean exists(String key) throws Exception;
-
-    // Reads the entry stored in the network for key.
-    // If there is a value, return it.
-    // If there isn't a value, return null.
-    // Handles any messages that have arrived.
     public String read(String key) throws Exception;
-
-    // Sets key to be value.
-    // Returns true if it worked, false if it didn't.
-    // Handles any messages that have arrived.
     public boolean write(String key, String value) throws Exception;
-
-    // If key is set to currentValue change it to newValue.
-    // Returns true if it worked, false if it didn't.
-    // Handles any messages that have arrived.
     public boolean CAS(String key, String currentValue, String newValue) throws Exception;
 }
-
 // DO NOT EDIT ends
 
 // Complete this!
-
 public class Node implements NodeInterface {
     private String nodeName;
     private Map<String, InetSocketAddress> peerMap = new HashMap<>();
@@ -115,68 +66,82 @@ public class Node implements NodeInterface {
             String message = new String(packet.getData(), 0, packet.getLength(), StandardCharsets.UTF_8);
             String[] parts = message.split(" ", 3);
             if (parts.length < 2) return;
+
             String transactionId = parts[0];
             String messageType = parts[1];
 
             switch (messageType) {
-                case "G":
-                    reply(packet.getAddress(), packet.getPort(), transactionId + " H 0 N:" + nodeName + " ");
-                    break;
-                case "N":
-                    reply(packet.getAddress(), packet.getPort(), transactionId + " O 0 N:" + nodeName + " 0 " + packet.getAddress().getHostAddress() + ":" + packet.getPort() + " ");
-                    break;
-                case "O":
-                    cacheNearest.put(transactionId, message);
-                    break;
-                case "R":
-                    String[] readParts = message.split(" ", 4);
-                    if (readParts.length >= 4) {
-                        String key = readParts[3].trim();
-                        if (vault.containsKey(key)) {
-                            String value = vault.get(key);
-                            reply(packet.getAddress(), packet.getPort(), transactionId + " S Y 0 " + value + " ");
-                        } else {
-                            reply(packet.getAddress(), packet.getPort(), transactionId + " S N 0 ");
-                        }
-                    }
-                    break;
-                case "W":
-                    String[] writeParts = message.split(" ", 5);
-                    if (writeParts.length >= 5) {
-                        String key = writeParts[3];
-                        String value = writeParts[4].trim();
-                        vault.put(key, value);
-                        reply(packet.getAddress(), packet.getPort(), transactionId + " X A ");
-                    }
-                    break;
-                case "C":
-                    String[] casParts = message.split(" ", 6);
-                    if (casParts.length >= 6) {
-                        String key = casParts[3];
-                        String oldVal = casParts[4];
-                        String newVal = casParts[5].trim();
-                        if (vault.containsKey(key) && vault.get(key).equals(oldVal)) {
-                            vault.put(key, newVal);
-                            reply(packet.getAddress(), packet.getPort(), transactionId + " D R ");
-                        } else {
-                            reply(packet.getAddress(), packet.getPort(), transactionId + " D N ");
-                        }
-                    }
-                    break;
-                case "E":
-                    String[] existsParts = message.split(" ", 4);
-                    if (existsParts.length >= 4) {
-                        String key = existsParts[3].trim();
-                        if (vault.containsKey(key)) {
-                            reply(packet.getAddress(), packet.getPort(), transactionId + " F Y ");
-                        } else {
-                            reply(packet.getAddress(), packet.getPort(), transactionId + " F N ");
-                        }
-                    }
-                    break;
+                case "G": handleNameRequest(transactionId, packet); break;
+                case "N": handleNearestRequest(transactionId, message, packet); break;
+                case "O": handleNearestResponse(transactionId, message); break;
+                case "R": handleReadRequest(transactionId, message, packet); break;
+                case "W": handleWriteRequest(transactionId, message, packet); break;
+                case "C": handleCASRequest(transactionId, message, packet); break;
+                case "E": handleExistsRequest(transactionId, message, packet); break;
             }
         } catch (SocketTimeoutException e) {
-            // Timeout reached, return control
+            // Timeout reached
+        }}
+
+
+    private void handleNameRequest(String tx, DatagramPacket packet) {
+        reply(packet.getAddress(), packet.getPort(), tx + " H 0 N:" + nodeName + " ");
+    }
+
+    private void handleNearestRequest(String tx, String msg, DatagramPacket packet) {
+        String[] parts = msg.split(" ", 4);
+        if (parts.length < 4) return;
+        String response = tx + " O 0 N:" + nodeName + " 0 " + packet.getAddress().getHostAddress() + ":" + packet.getPort() + " ";
+        reply(packet.getAddress(), packet.getPort(), response);
+    }
+
+    private void handleNearestResponse(String tx, String msg) {
+        cacheNearest.put(tx, msg);
+    }
+
+    private void handleReadRequest(String tx, String msg, DatagramPacket packet) {
+        String[] parts = msg.split(" ", 5);
+        if (parts.length < 5) return;
+        String key = parts[4].trim();
+        if (vault.containsKey(key)) {
+            String value = vault.get(key);
+            reply(packet.getAddress(), packet.getPort(), tx + " S Y 0 " + value + " ");
+        } else {
+            reply(packet.getAddress(), packet.getPort(), tx + " S N 0 ");
+        }
+    }
+
+    private void handleWriteRequest(String tx, String msg, DatagramPacket packet) {
+        String[] parts = msg.split(" ", 6);
+        if (parts.length < 6) return;
+        String key = parts[4];
+        String value = parts[5].trim();
+        vault.put(key, value);
+        reply(packet.getAddress(), packet.getPort(), tx + " X A ");
+    }
+
+    private void handleCASRequest(String tx, String msg, DatagramPacket packet) {
+        String[] parts = msg.split(" ", 7);
+        if (parts.length < 7) return;
+        String key = parts[4];
+        String oldVal = parts[5];
+        String newVal = parts[6].trim();
+        if (vault.containsKey(key) && vault.get(key).equals(oldVal)) {
+            vault.put(key, newVal);
+            reply(packet.getAddress(), packet.getPort(), tx + " D R ");
+        } else {
+            reply(packet.getAddress(), packet.getPort(), tx + " D N ");
+        }
+    }
+
+    private void handleExistsRequest(String tx, String msg, DatagramPacket packet) {
+        String[] parts = msg.split(" ", 5);
+        if (parts.length < 5) return;
+        String key = parts[4].trim();
+        if (vault.containsKey(key)) {
+            reply(packet.getAddress(), packet.getPort(), tx + " F Y ");
+        } else {
+            reply(packet.getAddress(), packet.getPort(), tx + " F N ");
         }
     }
 
